@@ -2,11 +2,9 @@
 name = "httpsnoop"
 object = "bin/httpsnoop"
 
-# BIND DIRECTIVES GO HERE!
-
 [[bind]]
-name = "output_rb"
+name = "http_queries"
 kind = "ring_buf"
 
 [bind.opts]
-btf_struct = "output"
+btf_struct = "http_query"

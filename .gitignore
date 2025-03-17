@@ -1,0 +1,11 @@
+# Generated files
+*.yeet
+!.yeet/
+bin/
+build/
+include/vmlinux.h
+
+# Custom local configs/tools
+.cache
+compile_flags.txt
+compile_commands.json

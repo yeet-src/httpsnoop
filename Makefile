@@ -24,6 +24,7 @@ CFLAGS = -g -O2 -target bpf -I include
 SRCS := $(wildcard $(SRCDIR)/*.bpf.c)
 OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
 CONTAINER ?= $(shell test -e /.dockerenv && echo yes || echo no)
+CLANG_FORMAT ?= $(shell type -P "clang-format-19" &> /dev/null && echo "clang-format-19" || echo "clang-format" )
 
 default: $(if $(filter yes, $(CONTAINER)), container, include/vmlinux.h $(BUILDDIR) $(BINDIR) $(BINDIR)/$(TARGET))
 ifeq ($(CONTAINER), yes)
@@ -74,12 +75,11 @@ endif
 clean_vmlinux:
 	rm include/vmlinux.h
 
-format: check_format
+format:
 ifeq ($(CONTAINER), yes)
 	docker run --rm -it -v $(CURDIR):/opt/$(TARGET) -w /opt/$(TARGET) $(TARGET) make format
 else
-	@-$(MAKE) --no-print-directory check_format
-	@find . -name "*.c" -exec clang-format-19 -i -style=file:$(CFORMAT) {} + || exit 1; \
+	@find . -name "*.c" -exec $(CLANG_FORMAT) -i -style=file:$(CFORMAT) {} + || exit 1; \
 	echo "Formatted all files"
 endif
 
@@ -87,5 +87,5 @@ check_format: $(if $(filter yes, $(CONTAINER)), container, )
 ifeq ($(CONTAINER), yes)
 	docker run --rm -it -v $(CURDIR):/opt/$(TARGET) -w /opt/$(TARGET) $(TARGET) make check_format
 else
-	@find . -name "*.c" -exec clang-format-19 -style=file:$(CFORMAT) --dry-run --Werror {} + || exit 1;
+	@find . -name "*.c" -exec $(CLANG_FORMAT) -style=file:$(CFORMAT) --dry-run --Werror {} + || exit 1;
 endif

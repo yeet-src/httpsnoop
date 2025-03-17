@@ -13,12 +13,12 @@ struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, REQUEST_MAP_SIZE);
   __type(key, struct request_map_key);
-  __type(value, struct http_query);
+  __type(value, struct http_exchange);
 } request_map SEC(".maps");
 
-RINGBUF_CHANNEL(http_queries, RINGBUF_SIZE * sizeof(struct http_query), http_query);
+RINGBUF_CHANNEL(http_exchanges, RINGBUF_SIZE * sizeof(struct http_exchange), http_exchange);
 
-static struct http_query empty = {};
+static struct http_exchange empty = {};
 
 int str_compare(char* str1, char* str2, int max)
 {
@@ -49,7 +49,7 @@ static __always_inline u8 is_http(char* data)
   return EXIT_FAILURE;
 }
 
-static __always_inline void handle_response(struct iphdr ip, struct tcphdr tcp, char* buf, struct http_query* http_data)
+static __always_inline void handle_response(struct iphdr ip, struct tcphdr tcp, char* buf, struct http_exchange* http_data)
 {
   int i;
   int first_space = 0;
@@ -70,11 +70,11 @@ static __always_inline void handle_response(struct iphdr ip, struct tcphdr tcp, 
     status += (buf[first_space] - '0') * 100;
     status += (buf[first_space + 1] - '0') * 10;
     status += (buf[first_space + 2] - '0');
-    http_data->status = status;
+    http_data->status_code = status;
   }
 }
 
-static __always_inline void handle_request(void* data, struct iphdr ip, struct tcphdr tcp, char* buf, struct http_query* http_data)
+static __always_inline void handle_request(void* data, struct iphdr ip, struct tcphdr tcp, char* buf, struct http_exchange* http_data)
 {
   int i;
   for (i = 0; i < MIN_HTTP_SIZE; i++) {
@@ -87,12 +87,12 @@ static __always_inline void handle_request(void* data, struct iphdr ip, struct t
   data += i;
 
   bpf_probe_read_kernel_str(&http_data->method, sizeof(http_data->method), buf);
-  bpf_probe_read_kernel_str(&http_data->request, sizeof(http_data->request), data);
+  bpf_probe_read_kernel_str(&http_data->target, sizeof(http_data->target), data);
 
   u16 j;
-  for (j = 1; j < sizeof(http_data->request); j++) {
-    if (http_data->request[j] == ' ') {
-      http_data->request[j] = '\0';
+  for (j = 1; j < sizeof(http_data->target); j++) {
+    if (http_data->target[j] == ' ') {
+      http_data->target[j] = '\0';
       break;
     }
   }
@@ -104,7 +104,7 @@ static __always_inline void handle_request(void* data, struct iphdr ip, struct t
     dp >> 16 & 0xff,
     dp >> 24 & 0xff,
   };
-  BPF_SNPRINTF(http_data->dest_ip, 16, "%pI4", d_octets, 2);
+  BPF_SNPRINTF(http_data->server_ip, 16, "%pI4", d_octets, 2);
 
   u32 sp = ip.saddr;
   u8 s_octets[] = {
@@ -113,18 +113,18 @@ static __always_inline void handle_request(void* data, struct iphdr ip, struct t
     sp >> 16 & 0xff,
     sp >> 24 & 0xff,
   };
-  BPF_SNPRINTF(http_data->source_ip, 16, "%pI4", s_octets, 2);
+  BPF_SNPRINTF(http_data->client_ip, 16, "%pI4", s_octets, 2);
 }
 
 SEC("tracepoint/net/net_dev_xmit")
 int trace_egress(struct trace_event_raw_net_dev_xmit* ctx)
 {
-  void* buff_addr = BPF_CORE_READ(ctx, skbaddr);
-  struct iphdr ip = {};
-  struct tcphdr tcp = {};
+  void* sk_buff_addr = BPF_CORE_READ(ctx, skbaddr);
+  struct iphdr ip_header = {};
+  struct tcphdr tcp_header = {};
   void* data;
   int data_len;
-  DECODE_TCP_PACKET(buff_addr, ip, tcp, data, data_len, true);
+  DECODE_TCP_PACKET(sk_buff_addr, ip_header, tcp_header, data, data_len, true);
 
   if (data_len > MAX_HTTP_SIZE || data_len < MIN_HTTP_SIZE) {
     return 0;
@@ -136,59 +136,59 @@ int trace_egress(struct trace_event_raw_net_dev_xmit* ctx)
 
   if (packet_type == PACKET_TYPE_REQUEST) {
     struct request_map_key key = {};
-    key.source_ip = ip.saddr;
-    key.dest_ip = ip.daddr;
-    key.source_port = tcp.source;
-    key.dest_port = tcp.dest;
+    key.client_ip = ip_header.saddr;
+    key.server_ip = ip_header.daddr;
+    key.client_port = tcp_header.source;
+    key.server_port = tcp_header.dest;
 
     bpf_map_update_elem(&request_map, &key, &empty, BPF_ANY);
-    struct http_query* cached = bpf_map_lookup_elem(&request_map, &key);
-    if (!cached) {
+    struct http_exchange* request = bpf_map_lookup_elem(&request_map, &key);
+    if (!request) {
       return EXIT_FAILURE;
     }
 
-    handle_request(data, ip, tcp, buf, cached);
+    handle_request(data, ip_header, tcp_header, buf, request);
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    cached->pid = pid_tgid;
-    cached->tgid = pid_tgid >> 32;
-    cached->latency_ns = bpf_ktime_get_ns();
-    bpf_get_current_comm(&cached->comm, sizeof(cached->comm));
-    bpf_map_update_elem(&request_map, &key, cached, BPF_ANY);
+    request->tid = pid_tgid;
+    request->pid = pid_tgid >> 32;
+    request->latency_ns = bpf_ktime_get_ns();
+    bpf_get_current_comm(&request->thread_name, sizeof(request->thread_name));
+    bpf_map_update_elem(&request_map, &key, request, BPF_ANY);
   }
 
   if (packet_type == PACKET_TYPE_RESPONSE) {
     struct request_map_key key = {};
 
-    key.dest_ip = ip.saddr;
-    key.dest_port = tcp.source;
-    key.source_ip = ip.daddr;
-    key.source_port = tcp.dest;
+    key.server_ip = ip_header.saddr;
+    key.server_port = tcp_header.source;
+    key.client_ip = ip_header.daddr;
+    key.client_port = tcp_header.dest;
 
-    struct http_query* cached = bpf_map_lookup_elem(&request_map, &key);
-    if (!cached) {
+    struct http_exchange* request = bpf_map_lookup_elem(&request_map, &key);
+    if (!request) {
       return EXIT_FAILURE;
     }
 
-    struct http_query* ret = bpf_ringbuf_reserve(&http_queries, sizeof(struct http_query), 0);
-    if (!ret) {
+    struct http_exchange* exchange = bpf_ringbuf_reserve(&http_exchanges, sizeof(struct http_exchange), 0);
+    if (!exchange) {
       return EXIT_FAILURE;
     }
 
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    ret->pid = pid_tgid;
-    ret->tgid = pid_tgid >> 32;
-    ret->latency_ns = bpf_ktime_get_ns() - cached->latency_ns;
-    bpf_get_current_comm(&ret->comm, sizeof(ret->comm));
+    exchange->tid = pid_tgid;
+    exchange->pid = pid_tgid >> 32;
+    exchange->latency_ns = bpf_ktime_get_ns() - request->latency_ns;
+    bpf_get_current_comm(&exchange->thread_name, sizeof(exchange->thread_name));
 
-    bpf_probe_read_kernel_str(&ret->method, sizeof(ret->method), &cached->method);
-    bpf_probe_read_kernel_str(&ret->dest_ip, sizeof(ret->dest_ip), &cached->dest_ip);
-    bpf_probe_read_kernel_str(&ret->source_ip, sizeof(ret->source_ip), &cached->source_ip);
-    bpf_probe_read_kernel_str(&ret->request, sizeof(ret->request), &cached->request);
+    bpf_probe_read_kernel_str(&exchange->method, sizeof(exchange->method), &request->method);
+    bpf_probe_read_kernel_str(&exchange->server_ip, sizeof(exchange->server_ip), &request->server_ip);
+    bpf_probe_read_kernel_str(&exchange->client_ip, sizeof(exchange->client_ip), &request->client_ip);
+    bpf_probe_read_kernel_str(&exchange->target, sizeof(exchange->target), &request->target);
 
-    handle_response(ip, tcp, buf, ret);
+    handle_response(ip_header, tcp_header, buf, exchange);
 
-    bpf_ringbuf_submit(ret, 0);
+    bpf_ringbuf_submit(exchange, 0);
   }
   return EXIT_SUCCESS;
 }
@@ -196,12 +196,12 @@ int trace_egress(struct trace_event_raw_net_dev_xmit* ctx)
 SEC("tracepoint/net/netif_receive_skb")
 int trace_ingress(struct trace_event_raw_net_dev_template* ctx)
 {
-  void* buff_addr = BPF_CORE_READ(ctx, skbaddr);
-  struct iphdr ip = {};
-  struct tcphdr tcp = {};
+  void* sk_buff_addr = BPF_CORE_READ(ctx, skbaddr);
+  struct iphdr ip_header = {};
+  struct tcphdr tcp_header = {};
   void* data;
   int data_len;
-  DECODE_TCP_PACKET(buff_addr, ip, tcp, data, data_len, false);
+  DECODE_TCP_PACKET(sk_buff_addr, ip_header, tcp_header, data, data_len, false);
 
   if (data_len > MAX_HTTP_SIZE || data_len < MIN_HTTP_SIZE) {
     return 0;
@@ -217,54 +217,54 @@ int trace_ingress(struct trace_event_raw_net_dev_template* ctx)
 
   if (packet_type == PACKET_TYPE_REQUEST) {
     struct request_map_key key = {};
-    key.source_ip = ip.saddr;
-    key.dest_ip = ip.daddr;
-    key.source_port = tcp.source;
-    key.dest_port = tcp.dest;
+    key.client_ip = ip_header.saddr;
+    key.server_ip = ip_header.daddr;
+    key.client_port = tcp_header.source;
+    key.server_port = tcp_header.dest;
 
     bpf_map_update_elem(&request_map, &key, &empty, BPF_ANY);
-    struct http_query* cached = bpf_map_lookup_elem(&request_map, &key);
-    if (!cached) {
+    struct http_exchange* request = bpf_map_lookup_elem(&request_map, &key);
+    if (!request) {
       return EXIT_FAILURE;
     }
 
-    handle_request(data, ip, tcp, buf, cached);
+    handle_request(data, ip_header, tcp_header, buf, request);
 
-    cached->latency_ns = bpf_ktime_get_ns();
-    bpf_map_update_elem(&request_map, &key, cached, BPF_ANY);
+    request->latency_ns = bpf_ktime_get_ns();
+    bpf_map_update_elem(&request_map, &key, request, BPF_ANY);
   }
 
   if (packet_type == PACKET_TYPE_RESPONSE) {
     struct request_map_key key = {};
     // change order on receive
-    key.dest_ip = ip.saddr;
-    key.dest_port = tcp.source;
-    key.source_ip = ip.daddr;
-    key.source_port = tcp.dest;
+    key.server_ip = ip_header.saddr;
+    key.server_port = tcp_header.source;
+    key.client_ip = ip_header.daddr;
+    key.client_port = tcp_header.dest;
 
-    struct http_query* cached = bpf_map_lookup_elem(&request_map, &key);
-    if (!cached) {
+    struct http_exchange* request = bpf_map_lookup_elem(&request_map, &key);
+    if (!request) {
       return EXIT_FAILURE;
     }
 
-    struct http_query* ret = bpf_ringbuf_reserve(&http_queries, sizeof(struct http_query), 0);
-    if (!ret) {
+    struct http_exchange* exchange = bpf_ringbuf_reserve(&http_exchanges, sizeof(struct http_exchange), 0);
+    if (!exchange) {
       return EXIT_FAILURE;
     }
 
-    ret->pid = cached->pid;
-    ret->tgid = cached->tgid;
-    ret->latency_ns = bpf_ktime_get_ns() - cached->latency_ns;
+    exchange->tid = request->tid;
+    exchange->pid = request->pid;
+    exchange->latency_ns = bpf_ktime_get_ns() - request->latency_ns;
 
-    bpf_probe_read_kernel_str(&ret->method, sizeof(ret->method), &cached->method);
-    bpf_probe_read_kernel_str(&ret->comm, sizeof(ret->comm), &cached->comm);
-    bpf_probe_read_kernel_str(&ret->dest_ip, sizeof(ret->dest_ip), &cached->dest_ip);
-    bpf_probe_read_kernel_str(&ret->source_ip, sizeof(ret->source_ip), &cached->source_ip);
-    bpf_probe_read_kernel_str(&ret->request, sizeof(ret->request), &cached->request);
+    bpf_probe_read_kernel_str(&exchange->method, sizeof(exchange->method), &request->method);
+    bpf_probe_read_kernel_str(&exchange->thread_name, sizeof(exchange->thread_name), &request->thread_name);
+    bpf_probe_read_kernel_str(&exchange->server_ip, sizeof(exchange->server_ip), &request->server_ip);
+    bpf_probe_read_kernel_str(&exchange->client_ip, sizeof(exchange->client_ip), &request->client_ip);
+    bpf_probe_read_kernel_str(&exchange->target, sizeof(exchange->target), &request->target);
 
-    handle_response(ip, tcp, buf, ret);
+    handle_response(ip_header, tcp_header, buf, exchange);
 
-    bpf_ringbuf_submit(ret, 0);
+    bpf_ringbuf_submit(exchange, 0);
   }
 
   return EXIT_SUCCESS;

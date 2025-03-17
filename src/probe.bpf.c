@@ -38,7 +38,12 @@ static __always_inline u8 is_http(char* data)
   if (str_compare(data, "GET /", 5)
       || str_compare(data, "POST /", 6)
       || str_compare(data, "PUT /", 5)
-      || str_compare(data, "DELETE /", 8)) {
+      || str_compare(data, "PATCH /", 7)
+      || str_compare(data, "DELETE /", 8)
+      || str_compare(data, "HEAD /", 6)
+      || str_compare(data, "OPTIONS /", 9)
+      || str_compare(data, "CONNECT /", 9)
+      || str_compare(data, "TRACE /", 7)) {
     return PACKET_TYPE_REQUEST;
   }
 

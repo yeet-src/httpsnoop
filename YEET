@@ -3,8 +3,8 @@ name = "httpsnoop"
 object = "bin/httpsnoop"
 
 [[bind]]
-name = "http_queries"
+name = "http_exchanges"
 kind = "ring_buf"
 
 [bind.opts]
-btf_struct = "http_query"
+btf_struct = "http_exchange"

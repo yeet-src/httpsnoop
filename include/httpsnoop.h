@@ -1,25 +1,21 @@
 #ifndef HTTPSNOOP_H
 #define HTTPSNOOP_H
 
+#include <vmlinux.h>
+
 #define ETH_P_IP 0x0800
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
 
-#define NAME_BUF_SIZE 256
-#define NAME_BUF_MAX 2 * NAME_BUF_SIZE
-
-#define ROUTE_BUF_SIZE 256
-#define ROUTE_BUF_MAX 2 * ROUTE_BUF_SIZE
-
-#define IP_BUF_MAX 16
-#define COMM_BUF_MAX 16
-#define METHOD_BUF_MAX 8
+#define IP_BUF_SIZE 16
+#define THREAD_NAME_BUF_SIZE 16
+#define METHOD_BUF_SIZE 8
 #define RINGBUF_SIZE 1024
 #define REQUEST_MAP_SIZE 1024
+#define TARGET_BUF_SIZE 512
 
 #define MAX_HTTP_SIZE 1500
 #define MIN_HTTP_SIZE 12
-#define RESPONSE_STATUS_POS 9
 #define MAX_HTTP_STATUS 599
 
 #define PACKET_TYPE_REQUEST 1
@@ -34,23 +30,23 @@
 #define TCPHDR_ECE 0x40
 #define TCPHDR_CWR 0x80
 
-struct http_query {
+struct http_exchange {
+  pid_t tid;
   pid_t pid;
-  pid_t tgid;
   u64 latency_ns;
-  int status;
-  char method[METHOD_BUF_MAX];
-  char comm[COMM_BUF_MAX];
-  char dest_ip[IP_BUF_MAX];
-  char source_ip[IP_BUF_MAX];
-  char request[ROUTE_BUF_MAX];
+  int status_code;
+  char method[METHOD_BUF_SIZE];
+  char thread_name[THREAD_NAME_BUF_SIZE];
+  char server_ip[IP_BUF_SIZE];
+  char client_ip[IP_BUF_SIZE];
+  char target[TARGET_BUF_SIZE];
 } __attribute__((packed));
 
 struct request_map_key {
-  u32 dest_ip;
-  u32 source_ip;
-  u16 dest_port;
-  u16 source_port;
+  u32 server_ip;
+  u32 client_ip;
+  u16 server_port;
+  u16 client_port;
 };
 
 #define DECODE_TCP_PACKET(sk_buff_addr, ip, tcp, data, data_len, use_eth) \

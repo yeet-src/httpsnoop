@@ -1,0 +1,12 @@
+[info]
+name = "httpsnoop"
+object = "bin/httpsnoop"
+
+# BIND DIRECTIVES GO HERE!
+
+[[bind]]
+name = "output_rb"
+kind = "ring_buf"
+
+[bind.opts]
+btf_struct = "output"

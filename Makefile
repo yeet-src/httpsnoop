@@ -23,9 +23,13 @@ CFLAGS = -g -O2 -target bpf -I include
 
 SRCS := $(wildcard $(SRCDIR)/*.bpf.c)
 OBJS = $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(SRCS))
-CONTAINER ?= $(shell test -e /.dockerenv && echo yes || echo no)
-CLANG_FORMAT ?= $(shell type -P "clang-format-19" &> /dev/null && echo "clang-format-19" || echo "clang-format" )
-BPFTOOL ?= $(shell type -P "bpftool" &> /dev/null && echo "bpftool" || echo "/usr/sbin/bpftool" )
+CONTAINER ?= $(shell type docker > /dev/null && echo yes || echo no)
+CLANG_FORMAT ?= $(shell type "clang-format-19" > /dev/null && echo "clang-format-19" || echo "clang-format")
+BPFTOOL ?= $(shell type "bpftool" > /dev/null && echo "bpftool" || echo "/usr/sbin/bpftool" )
+
+USERNAME ?= $(shell whoami)
+USER_ID ?= $(shell id -u)
+GROUP_ID ?= $(shell id -g)
 
 default: $(if $(filter yes, $(CONTAINER)), container, include/vmlinux.h $(BUILDDIR) $(BINDIR) $(BINDIR)/$(TARGET))
 ifeq ($(CONTAINER), yes)
@@ -35,14 +39,18 @@ endif
 debug: CFLAGS += -DBPF_DEBUG=1
 debug: default
 
-pkg:
-	$(PROJECT_ROOT)/scripts/yeet_pkg.sh --target $(TARGET) --bin $(BINDIR)/$(TARGET)
+pkg: default
+	$(PROJECT_ROOT)/scripts/yeet_pkg.sh --target $(TARGET)
 
 unpkg:
 	$(PROJECT_ROOT)/scripts/yeet_pkg.sh -u --target $(TARGET)
 
 container:
-	docker build -t $(TARGET) .
+	docker build \
+		--build-arg username=$(USERNAME) \
+		--build-arg user_id=$(USER_ID) \
+		--build-arg group_id=$(GROUP_ID) \
+		-t $(TARGET) .
 
 $(BINDIR)/$(TARGET): $(OBJS)
 	$(BPFTOOL) gen object $@ $^
